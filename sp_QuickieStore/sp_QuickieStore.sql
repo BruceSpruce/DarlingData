@@ -4756,25 +4756,6 @@ SELECT DISTINCT
 FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
 JOIN #hi_interesting AS i
     ON qsq.query_hash = i.query_hash
-OPTION(RECOMPILE);
-
-SELECT DISTINCT
-    qsq.query_hash,
-    qsp.plan_id
-FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
-JOIN ' + @database_name_quoted + N'.sys.query_store_plan AS qsp
-    ON qsq.query_id = qsp.query_id
-JOIN #hi_interesting AS i
-    ON qsq.query_hash = i.query_hash
-OPTION(RECOMPILE);
-
-SELECT DISTINCT
-    qsq.query_hash,
-    qsq.object_id
-FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
-JOIN #hi_interesting AS i
-    ON qsq.query_hash = i.query_hash
-WHERE qsq.object_id > 0
 OPTION(RECOMPILE);' + @nc10;
 
     IF @debug = 1
@@ -4809,10 +4790,7 @@ OPTION(RECOMPILE);' + @nc10;
             @current_table;
     END;
 
-    /*
-    The multi-result-set approach above only inserts the first result.
-    Run the plan and object queries separately.
-    */
+    /*Insert plan and object IDs separately*/
     SELECT
         @sql = @isolation_level;
 
