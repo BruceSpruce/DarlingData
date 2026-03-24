@@ -4248,7 +4248,64 @@ OPTION(RECOMPILE);' + @nc10;
             @current_table;
     END;
 
-    /*Step 1b: Representative query text per query_hash*/
+    /*Step 2b: Stage query_ids for interesting hashes (reused by text, time bucketing, and identifiers)*/
+    SELECT
+        @current_table = 'inserting #hi_id_staging_queries',
+        @sql = @isolation_level;
+
+    IF @troubleshoot_performance = 1
+    BEGIN
+        EXECUTE sys.sp_executesql
+            @troubleshoot_insert,
+          N'@current_table nvarchar(100)',
+            @current_table;
+
+        SET STATISTICS XML ON;
+    END;
+
+    SELECT
+        @sql += N'
+SELECT DISTINCT
+    qsq.query_hash,
+    qsq.query_id
+FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
+JOIN #hi_interesting AS i
+    ON qsq.query_hash = i.query_hash
+OPTION(RECOMPILE);' + @nc10;
+
+    IF @debug = 1
+    BEGIN
+        PRINT LEN(@sql);
+        PRINT @sql;
+    END;
+
+    INSERT
+        #hi_id_staging_queries WITH (TABLOCK)
+    (
+        query_hash,
+        query_id
+    )
+    EXECUTE sys.sp_executesql
+        @sql;
+
+    IF @troubleshoot_performance = 1
+    BEGIN
+        SET STATISTICS XML OFF;
+
+        EXECUTE sys.sp_executesql
+            @troubleshoot_update,
+          N'@current_table nvarchar(100)',
+            @current_table;
+
+        EXECUTE sys.sp_executesql
+            @troubleshoot_info,
+          N'@sql nvarchar(max),
+            @current_table nvarchar(100)',
+            @sql,
+            @current_table;
+    END;
+
+    /*Step 2c: Representative query text per query_hash*/
     SELECT
         @current_table = 'inserting #hi_representative_text',
         @sql = @isolation_level;
@@ -4272,21 +4329,23 @@ SELECT
 FROM
 (
     SELECT
-        qsq.query_hash,
+        sq.query_hash,
         qsq.query_text_id,
         rn =
             ROW_NUMBER() OVER
             (
-                PARTITION BY qsq.query_hash
+                PARTITION BY sq.query_hash
                 ORDER BY SUM(qsrs.count_executions) DESC
             )
-    FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
+    FROM #hi_id_staging_queries AS sq
+    JOIN ' + @database_name_quoted + N'.sys.query_store_query AS qsq
+        ON qsq.query_id = sq.query_id
     JOIN ' + @database_name_quoted + N'.sys.query_store_plan AS qsp
-        ON qsq.query_id = qsp.query_id
+        ON qsp.query_id = sq.query_id
     JOIN ' + @database_name_quoted + N'.sys.query_store_runtime_stats AS qsrs
-        ON qsp.plan_id = qsrs.plan_id
+        ON qsrs.plan_id = qsp.plan_id
     JOIN ' + @database_name_quoted + N'.sys.query_store_runtime_stats_interval AS qsrsi
-        ON qsrs.runtime_stats_interval_id = qsrsi.runtime_stats_interval_id
+        ON qsrsi.runtime_stats_interval_id = qsrs.runtime_stats_interval_id
     WHERE qsrsi.start_time >= @start_date
     AND   qsrsi.start_time <  @end_date' + @nc10;
 
@@ -4317,7 +4376,7 @@ FROM
 
     SELECT
         @sql += N'    GROUP BY
-        qsq.query_hash,
+        sq.query_hash,
         qsq.query_text_id
 ) AS ranked
 JOIN ' + @database_name_quoted + N'.sys.query_store_query_text AS qsqt
@@ -4470,63 +4529,6 @@ OPTION(RECOMPILE);' + @nc10;
             )
     INTO #hi_scored
     FROM #hi_query_stats AS qs;
-
-    /*Step 3b: Stage query_ids for interesting hashes (reused by time bucketing and identifiers)*/
-    SELECT
-        @current_table = 'inserting #hi_id_staging_queries',
-        @sql = @isolation_level;
-
-    IF @troubleshoot_performance = 1
-    BEGIN
-        EXECUTE sys.sp_executesql
-            @troubleshoot_insert,
-          N'@current_table nvarchar(100)',
-            @current_table;
-
-        SET STATISTICS XML ON;
-    END;
-
-    SELECT
-        @sql += N'
-SELECT DISTINCT
-    qsq.query_hash,
-    qsq.query_id
-FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
-JOIN #hi_interesting AS i
-    ON qsq.query_hash = i.query_hash
-OPTION(RECOMPILE);' + @nc10;
-
-    IF @debug = 1
-    BEGIN
-        PRINT LEN(@sql);
-        PRINT @sql;
-    END;
-
-    INSERT
-        #hi_id_staging_queries WITH (TABLOCK)
-    (
-        query_hash,
-        query_id
-    )
-    EXECUTE sys.sp_executesql
-        @sql;
-
-    IF @troubleshoot_performance = 1
-    BEGIN
-        SET STATISTICS XML OFF;
-
-        EXECUTE sys.sp_executesql
-            @troubleshoot_update,
-          N'@current_table nvarchar(100)',
-            @current_table;
-
-        EXECUTE sys.sp_executesql
-            @troubleshoot_info,
-          N'@sql nvarchar(max),
-            @current_table nvarchar(100)',
-            @sql,
-            @current_table;
-    END;
 
     /*Step 4: Time bucketing (starts from staged query_ids, skips query_store_query)*/
     DECLARE
@@ -5643,15 +5645,24 @@ SELECT
 FROM #hi_output AS o
 OUTER APPLY
 (
-    SELECT TOP (1)
-        qsp.query_plan
-    FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
-    JOIN ' + @database_name_quoted + N'.sys.query_store_plan AS qsp
-        ON qsq.query_id = qsp.query_id
-    WHERE qsq.query_hash = o.query_hash
-    AND   qsp.query_plan IS NOT NULL
-    ORDER BY
-        qsp.last_execution_time DESC
+    SELECT
+        qp0.*
+    FROM
+    (
+        SELECT
+            n = ROW_NUMBER() OVER
+                (
+                    ORDER BY
+                        qsp.last_execution_time DESC
+                ),
+            qsp.query_plan
+        FROM ' + @database_name_quoted + N'.sys.query_store_query AS qsq
+        JOIN ' + @database_name_quoted + N'.sys.query_store_plan AS qsp
+            ON qsq.query_id = qsp.query_id
+        WHERE qsq.query_hash = o.query_hash
+        AND   qsp.query_plan IS NOT NULL
+    ) AS qp0
+    WHERE qp0.n = 1
 ) AS qp
 ORDER BY
     o.impact_score DESC,
