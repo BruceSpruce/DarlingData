@@ -2311,7 +2311,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             nvarchar(MAX),
             N'.sys.dm_db_partition_stats ps
         WHERE ps.object_id = i.object_id
-        AND   ps.index_id = 1
+        AND   ps.index_id IN (0, 1)
         AND   ps.row_count >= @min_rows
     )'
         );
@@ -4524,8 +4524,8 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
             CASE
                 WHEN ia.action = N'MAKE UNIQUE'
                 THEN N'CREATE UNIQUE '
-                WHEN ia.action = N'MERGE INCLUDES'
-                THEN N'CREATE '
+                WHEN ia.is_unique = 1
+                THEN N'CREATE UNIQUE '
                 ELSE N'CREATE '
             END +
             N'INDEX ' +
